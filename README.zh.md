@@ -1,60 +1,58 @@
-# SideNote 智能协作辅助工具 - AI 接口说明文档
+# SideNote
 
-SideNote 不仅是一款驻靠在 macOS 屏幕边缘的纯原生（Swift/AppKit）三屏分立记事本，它更是一个被专门设计用来与外部大型语言模型（Agent）无缝耦合的**人机混合工作流枢纽**。
+SideNote 是一个用 Swift、AppKit 和 SwiftUI 写的原生 macOS 侧边栏记事本。它常驻在屏幕边缘，提供 `工作`、`开发`、`生活` 三个长期可用的面板，并支持通过纯文本文件和 AI / Agent 工作流对接。
 
-这份文档专为大模型脚本引擎/基于微信或 Python 的工作流集成组件编写，以便快速开发与 SideNote 共用的「日常运转技能 (Skill)」。
+[English README](README.md) | [AI 接口文档](AI_INTEGRATION.zh.md) | [打包说明](PACKAGING.zh.md)
 
----
+## 功能特性
 
-## 1. 核心架构与数据流流向
+- 三个固定分类面板：`Work`、`Dev`、`Life`
+- 屏幕边缘呼出与收起的侧边栏交互
+- 自动按周归档到 `~/Documents/SideNote_Archive`
+- 自动导出本周全文和按日切片文本
+- 支持 AI Inbox 文本投递并自动转为待办事项
+- 菜单栏控制和开机自启动开关
 
-本机的 SideNote 数据并非完全密闭的暗盒数据，为了支持 AI 数据解析，整个通讯协议与数据枢纽基于 macOS 极简的**透明文件映射机制**进行。
+## 运行要求
 
-所有的通讯文件与记录，均在主机上的下述绝对公开路径：
-`~/Documents/SideNote_Archive/Current_Week/`
+- macOS 13 及以上
+- Swift 6 工具链，或支持 Swift Package Manager 的 Xcode
 
-此目录下会有明确针对三大任务切片的文件对应（前缀名称分别如下）：
-- **工作 (Work)**：对应的模块名为 `work`
-- **开发 (Dev)**：对应的模块名为 `dev`
-- **生活 (Life)**：对应的模块名为 `life`
+## 构建运行
 
-*注：每周一凌晨的跨周启动期，系统会将过去一周这三个框里的累积数据整体打包进 `Backup_xxxx` 归档文件夹，随后桌面 UI 完全清空进行全新的一周记录。*
+```bash
+swift build
+swift run
+```
 
----
+## 打包文件
 
-## 2. 爬取/读取记忆层流 (Read Access)
+仓库内提供了已经打包好的应用压缩包：
 
-SideNote 采取了**双轨并行**的数据导出机制来全方位满足大模型的需要：
+- `SideNote.app.zip`
 
-### 维度 A：按周统设的高层级历史全貌镜像
-如果大模型需要对本周所有记录进行盘点总结，请读取：
-- `~/Documents/SideNote_Archive/Current_Week/work.txt`（包含 `dev.txt`, `life.txt`）
-**特性**：此文本会在自然段落中自动包含 `[=== 2026-04-14 ===]` 样式的每日时间切割锚点。
+如果你想重新自己打包，可以直接执行：
 
-### 维度 B：按系统日期精准分发的“日历片”(Daily Slices)
-如果外部大模型（比如一个专门设定为只在每天晚上做当日复盘的挂机 Agent）只需要今天、或任意之前某一天的局部文字：
-系统每天都会在下面这个高精度切割目录生成**日抛型文本**：
-- `~/Documents/SideNote_Archive/Current_Week/Daily/`
-里面含有 `2026-04-14_work.txt`、`2026-04-13_life.txt` 等格式。模型直接打开对应日期的切割文件，连时间锚点都不需要自行切割便能获得最纯粹的当日输入！
+```bash
+./package.sh
+```
 
-### 核心解析逻辑：AI 如何剥离与诊断未完成的任务？
-您的 AI 后端无需做任何复杂的 NLP 逻辑即可辨认任务闭环状态：
-1. Agent **按行读取 (ReadLine)** 上述文本资源。
-2. 只要探测到某一行以极其特殊的字符 `☐` 为起始的（此 Unicode 代表了用户尚未打勾处理的互动框），AI 即可将其定义为未完工事件。
-3. 当用户通过鼠标将它们勾选后，该原生的文本源中此字符会瞬间变为被勾选的 `☑`。AI 理应将带此符号的标记定义为“已执行”。
+详细说明见 [PACKAGING.zh.md](PACKAGING.zh.md)。
 
----
+## 项目结构
 
-## 3. 投递向日记本写入指令槽 (Write Access / AI Inbox)
+- `Sources/main.swift`：应用启动、菜单栏与生命周期
+- `Sources/SidePanel.swift`：侧边栏 UI、笔记存储与归档逻辑
+- `demo_ai_skill.py`：AI 工作流接入示例脚本
 
-如果您的 AI Skill（比如每天早上准时的每日复盘规划脚本）需要**向用户当前的记事本内追加新任务或者汇报**，请使用系统专门预留的**专属吞噬槽口 (AI Inbox)**：
+## 数据与 AI 接入
 
-请根据需要注入的模块目标，新建（或覆盖写入）下述路径中的任意文件：
-- `~/Documents/SideNote_Archive/Current_Week/work_ai_append.txt`
-- `~/Documents/SideNote_Archive/Current_Week/dev_ai_append.txt`
-- `~/Documents/SideNote_Archive/Current_Week/life_ai_append.txt`
+SideNote 的工作数据目录是：
 
-**向 Inbox 写入的三条规则与自动魔改底层逻辑：**
-1. **纯文字传达即全部**：直接写入内容即可。不需要额外用诸如 `🤖 AI 回执` 这种多余的话提醒用户，SideNote 会在其客户端 UI 里自动用灰色的 `需要完成这些任务：` 提供包裹隔离！
-2. **全自动装配勾选框机制**：作为 AI，您在给文件输入建议任务时（例如仅仅输入 `完善产品流程设计`），**千万不需要自己画特殊字符复选按钮图案**。任何被塞进这个文件中并且没有打上方框标记的字符，在被吞噬渲染的那一瞬间，SideNote 第一层的分词引擎会自动帮这些建议剔除不需要的编号（比如 `1. `），并在所有内容前方打上可点击的原生勾选框（`☐ `）并输送给用户视窗。您所需要确保的就是**按回车键分行**即可。
-3. **“阅后即焚”的安全落盘**：只要您把文本送进这三个 `_ai_append.txt` 之内，它只要被运行中的应用层组件嗅探到，不超过几百毫秒就会在视觉面板中渲染出原生文本。紧接着，SideNote 的后台垃圾回收策略会**瞬间毁灭（删除）该 `_ai_append.txt` 源文件**。您无需担心这部分文件会重叠覆盖问题：只要这几个文件没了，代表用户端就已经将您所布置的工作指令吃进了当日的新卡片里！
+```text
+~/Documents/SideNote_Archive/Current_Week/
+```
+
+应用会输出每周纯文本、每日切片，并监听 `work_ai_append.txt`、`dev_ai_append.txt`、`life_ai_append.txt` 这类 AI 投递文件。
+
+完整的中文 AI 接口说明见 [AI_INTEGRATION.zh.md](AI_INTEGRATION.zh.md)。
