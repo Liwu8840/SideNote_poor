@@ -85,58 +85,78 @@ class NoteManager: ObservableObject {
         formatter.dateFormat = "yyyy-MM-dd"
         let todayStr = formatter.string(from: now)
         
-        var modified = false
-        let mutableAttr = NSMutableAttributedString(attributedString: attributedString)
-        let rootFont = NSFont.systemFont(ofSize: 16)
-        
-        // 1. 每日自动插入日期标记
         let lastDay = UserDefaults.standard.string(forKey: "sidenote_last_day_\(baseFilename)")
+        var modified = false
+        
+        // 1. 每日清空逻辑 (Daily Reset)
         if lastDay != todayStr {
-            let headerText = "\n\n[=== \(todayStr) ===]\n\n"
-            let finalHeader = (mutableAttr.length == 0) ? String(headerText.dropFirst(2)) : headerText
-            let header = NSAttributedString(string: finalHeader, attributes: [
-                .font: NSFont.boldSystemFont(ofSize: 18), 
-                .foregroundColor: NSColor.systemGray
-            ])
-            mutableAttr.append(header)
+            self.attributedString = NSAttributedString(string: "")
             UserDefaults.standard.set(todayStr, forKey: "sidenote_last_day_\(baseFilename)")
             modified = true
         }
         
+        let mutableAttr = NSMutableAttributedString(attributedString: attributedString)
+        
         // 2. 自动摄取 AI 下发的任务指令文件，并转化为可交互的任务复选框
         let aiFile = currentWeekDir.appendingPathComponent("\(baseFilename)_ai_append.txt")
+        var aiContentFound = false
+        
         if FileManager.default.fileExists(atPath: aiFile.path) {
             if let aiText = try? String(contentsOf: aiFile, encoding: .utf8), !aiText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let processedText = aiText.components(separatedBy: .newlines)
-                    .map { line -> String in
-                        let trimmed = line.trimmingCharacters(in: .whitespaces)
-                        if trimmed.isEmpty { return line }
-                        // 如果内容没有带可选方框且不包含引言字样，自动追加智能方框 (☐) 作为交互待办！
-                        if !trimmed.hasPrefix("☐") && !trimmed.hasPrefix("☑") && !trimmed.hasPrefix("需要完成") {
-                           // Remove leading numbering like "1. " or "2." if any, or just prepend
-                           // Keeping it simple and robust by appending directly
-                           let regex = try? NSRegularExpression(pattern: "^\\d+\\.\\s*")
-                           let cleanRange = NSRange(location: 0, length: trimmed.utf16.count)
-                           let stripped = regex?.stringByReplacingMatches(in: trimmed, range: cleanRange, withTemplate: "") ?? trimmed
-                           return "☐ " + stripped
-                        }
-                        return line
-                    }
-                    .joined(separator: "\n")
-                
-                let titleAttr = NSAttributedString(string: "需要完成这些任务：\n", attributes: [.font: rootFont, .foregroundColor: NSColor.systemGray])
-                let aiAttr = NSAttributedString(string: "\(processedText)\n", attributes: [.font: rootFont, .foregroundColor: NSColor.black])
-                
-                mutableAttr.append(titleAttr)
-                mutableAttr.append(aiAttr)
+                injectTasks(aiText, into: mutableAttr)
+                aiContentFound = true
                 modified = true
             }
             try? FileManager.default.removeItem(at: aiFile)
         }
         
+        // 3. 注入虚拟/Mock 数据 (如果是一天中第一次打开且没有 AI 文件)
+        if lastDay != todayStr && !aiContentFound {
+            let mockText: String
+            switch baseFilename {
+            case "work":
+                mockText = "整理今日核心工作任务\n检查 MediaAgent 自动化状态\n复盘昨日遗留待办清单"
+            case "dev":
+                mockText = "Review 侧边笔记代码提交\n优化 UI 触发表层逻辑\n调试 AI 数据流同步接口"
+            case "life":
+                mockText = "保持每日核心运动 30 分钟\n补充足够水分与健康饮食\n阅读技术博文或书籍 15 分钟"
+            default:
+                mockText = "开始记录精彩的一天"
+            }
+            
+            let titleAttr = NSAttributedString(string: "今日建议完成的任务：\n", attributes: [
+                .font: NSFont.boldSystemFont(ofSize: 17), 
+                .foregroundColor: NSColor.systemGray
+            ])
+            mutableAttr.append(titleAttr)
+            injectTasks(mockText, into: mutableAttr)
+            modified = true
+        }
+        
         if modified {
             self.attributedString = mutableAttr
         }
+    }
+    
+    /// 辅助方法：将纯文本任务段落转化为带 ☐ 的富文本
+    private func injectTasks(_ text: String, into mutableAttr: NSMutableAttributedString) {
+        let rootFont = NSFont.systemFont(ofSize: 16)
+        let processedText = text.components(separatedBy: .newlines)
+            .map { line -> String in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty { return line }
+                if !trimmed.hasPrefix("☐") && !trimmed.hasPrefix("☑") {
+                   let regex = try? NSRegularExpression(pattern: "^\\d+\\.\\s*")
+                   let cleanRange = NSRange(location: 0, length: trimmed.utf16.count)
+                   let stripped = regex?.stringByReplacingMatches(in: trimmed, range: cleanRange, withTemplate: "") ?? trimmed
+                   return "☐ " + stripped
+                }
+                return line
+            }
+            .joined(separator: "\n")
+        
+        let aiAttr = NSAttributedString(string: "\(processedText)\n\n", attributes: [.font: rootFont, .foregroundColor: NSColor.black])
+        mutableAttr.append(aiAttr)
     }
     
     private func load() {
@@ -176,35 +196,20 @@ class NoteManager: ObservableObject {
             try? data.write(to: fileURL) 
         }
         
-        // 1. 同步输出本周全量明文 (Weekly All)
+        // 1. 同步输出本周全量明文 (Weekly All - 在 Daily Slate 模式下，此文件主要体现最新状态)
         try? plainText.write(to: textURL, atomically: true, encoding: .utf8)
         
-        // 2. 切割输出绝对每日切片 (Daily Slices)
+        // 2. 同步输出绝对每日切片 (Daily Slices)
         let dailyDir = MaintenanceManager.archiveURL.appendingPathComponent("Current_Week/Daily")
         try? FileManager.default.createDirectory(at: dailyDir, withIntermediateDirectories: true)
         
-        let pattern = "\\[=== (\\d{4}-\\d{2}-\\d{2}) ===\\]"
-        if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
-            let nsString = plainText as NSString
-            let matches = regex.matches(in: plainText, options: [], range: NSRange(location: 0, length: nsString.length))
-            
-            for (index, match) in matches.enumerated() {
-                let dateRange = match.range(at: 1)
-                let dateStr = nsString.substring(with: dateRange)
-                
-                let startLoc = match.range.location + match.range.length
-                var endLoc = nsString.length
-                if index + 1 < matches.count {
-                    endLoc = matches[index + 1].range.location
-                }
-                
-                let contentRange = NSRange(location: startLoc, length: endLoc - startLoc)
-                let dailyContent = nsString.substring(with: contentRange).trimmingCharacters(in: .whitespacesAndNewlines)
-                
-                let dailyURL = dailyDir.appendingPathComponent("\(dateStr)_\(baseFilename).txt")
-                try? dailyContent.write(to: dailyURL, atomically: true, encoding: .utf8)
-            }
-        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        // 使用 UserDefaults 中的日期确保文件名准确
+        let dateStr = UserDefaults.standard.string(forKey: "sidenote_last_day_\(baseFilename)") ?? formatter.string(from: Date())
+        
+        let dailyURL = dailyDir.appendingPathComponent("\(dateStr)_\(baseFilename).txt")
+        try? plainText.write(to: dailyURL, atomically: true, encoding: .utf8)
     }
 }
 
@@ -523,7 +528,7 @@ struct SideView: View {
                             .resizable().scaledToFit().frame(width: 28, height: 28).clipShape(Circle())
                         
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("李武的笔记").font(.system(size: 16, weight: .bold, design: .rounded))
+                            Text("侧边笔记").font(.system(size: 16, weight: .bold, design: .rounded))
                             Text(Date(), style: .date).font(.system(size: 10, weight: .medium, design: .rounded)).foregroundColor(.secondary)
                         }
                         Spacer()

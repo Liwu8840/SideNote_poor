@@ -15,6 +15,7 @@ mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 
 cp ".build/release/SideNote" "$APP_MACOS/SideNote"
 cp "SideNote.icns" "$APP_RESOURCES/AppIcon.icns"
+cp "avatar.png" "$APP_RESOURCES/avatar.png"
 
 cat > "$APP_CONTENTS/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
