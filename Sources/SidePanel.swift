@@ -572,7 +572,7 @@ struct SideView: View {
                             .resizable().scaledToFit().frame(width: 28, height: 28).clipShape(Circle())
                         
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("李武的笔记").font(.system(size: 16, weight: .bold, design: .rounded))
+                            Text("侧边笔记").font(.system(size: 16, weight: .bold, design: .rounded))
                             Text(Date(), style: .date).font(.system(size: 10, weight: .medium, design: .rounded)).foregroundColor(.secondary)
                         }
                         
