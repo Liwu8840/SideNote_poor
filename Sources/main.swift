@@ -121,10 +121,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 struct MaintenanceManager {
-    static let archiveURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("SideNote_Archive")
+    /// 获取标准的 Application Support 目录下的 SideNote 存档路径
+    /// 打包后的 app 会使用 ~/Library/Application Support/SideNote/Archive
+    static let archiveURL: URL = {
+        let appSupportURL: URL
+        if let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            appSupportURL = url
+        } else {
+            // Fallback to home directory
+            appSupportURL = FileManager.default.homeDirectoryForCurrentUser
+        }
+        return appSupportURL.appendingPathComponent("SideNote/Archive")
+    }()
+    
     static var currentWeekURL: URL { archiveURL.appendingPathComponent("Current_Week") }
     
+    
+    /// 获取 AI 指令文件路径（供外部工具使用）
+    static func getAIFilePaths() -> [String: URL] {
+        let currentWeekDir = currentWeekURL
+        return [
+            "work_replace": currentWeekDir.appendingPathComponent("work_ai_replace.txt"),
+            "work_append": currentWeekDir.appendingPathComponent("work_ai_append.txt"),
+            "dev_replace": currentWeekDir.appendingPathComponent("dev_ai_replace.txt"),
+            "dev_append": currentWeekDir.appendingPathComponent("dev_ai_append.txt"),
+            "life_replace": currentWeekDir.appendingPathComponent("life_ai_replace.txt"),
+            "life_append": currentWeekDir.appendingPathComponent("life_ai_append.txt"),
+            "archive_root": archiveURL,
+            "current_week": currentWeekDir
+        ]
+    }
+    
     static func performCheck() -> Bool {
+        // 直接创建目录结构（不迁移旧数据）
         try? FileManager.default.createDirectory(at: currentWeekURL, withIntermediateDirectories: true)
         
         var calendar = Calendar.current
@@ -151,7 +180,10 @@ struct MaintenanceManager {
     }
 }
 
+// Workaround for @MainActor initialization
+let delegate: AppDelegate = MainActor.assumeIsolated {
+    AppDelegate()
+}
 let app = NSApplication.shared
-let delegate = AppDelegate()
 app.delegate = delegate
 app.run()

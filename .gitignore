@@ -6,3 +6,11 @@ DerivedData/
 .swiftpm/configuration/registries.json
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
+
+# Runtime data (user notes)
+Archive/
+SideNote.app.zip
+
+# IDE
+*.xcodeproj/
+*.xcworkspace/

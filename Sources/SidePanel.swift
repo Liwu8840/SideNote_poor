@@ -65,6 +65,13 @@ class NoteManager: ObservableObject {
         load()
         checkDailyAndAIUpdates()
         
+        // 使用 2s 轮询替代不稳定监听，确保 100% 同步成功
+        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.checkDailyAndAIUpdates()
+            }
+        }
+        
         saveSubject
             .debounce(for: .milliseconds(800), scheduler: RunLoop.main)
             .sink { [weak self] in
@@ -96,45 +103,65 @@ class NoteManager: ObservableObject {
         }
         
         let mutableAttr = NSMutableAttributedString(attributedString: attributedString)
-        
-        // 2. 自动摄取 AI 下发的任务指令文件，并转化为可交互的任务复选框
-        let aiFile = currentWeekDir.appendingPathComponent("\(baseFilename)_ai_append.txt")
+        let replaceFile = currentWeekDir.appendingPathComponent("\(baseFilename)_ai_replace.txt")
+        let appendFile = currentWeekDir.appendingPathComponent("\(baseFilename)_ai_append.txt")
         var aiContentFound = false
         
-        if FileManager.default.fileExists(atPath: aiFile.path) {
-            if let aiText = try? String(contentsOf: aiFile, encoding: .utf8), !aiText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // 1.5 自动摄取 AI 下发的「替换/重组」指令文件
+        if FileManager.default.fileExists(atPath: replaceFile.path) {
+            print("SideNote: 🚀 发现 AI 替换指令: \(replaceFile.lastPathComponent) at \(replaceFile.path)")
+            if let aiText = try? String(contentsOf: replaceFile, encoding: .utf8), !aiText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // 写死替换：先清空当前分类的所有内容
+                mutableAttr.setAttributedString(NSAttributedString(string: ""))
                 injectTasks(aiText, into: mutableAttr)
                 aiContentFound = true
                 modified = true
+                print("SideNote: ✅ 替换成功，清空旧数据并应用新内容，长度: \(aiText.count)")
+                try? FileManager.default.removeItem(at: replaceFile)
+            } else {
+                print("SideNote: ❌ 读取 AI 替换文件失败或内容为空，保留文件待重试")
             }
-            try? FileManager.default.removeItem(at: aiFile)
+        }
+        
+        // 2. 自动摄取 AI 下发的「追加」指令文件
+        if FileManager.default.fileExists(atPath: appendFile.path) {
+            print("SideNote: 🚀 发现 AI 追加指令: \(appendFile.lastPathComponent) at \(appendFile.path)")
+            if let aiText = try? String(contentsOf: appendFile, encoding: .utf8), !aiText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                injectTasks(aiText, into: mutableAttr)
+                aiContentFound = true
+                modified = true
+                print("SideNote: ✅ 追加成功，长度: \(aiText.count)")
+                try? FileManager.default.removeItem(at: appendFile)
+            } else {
+                print("SideNote: ❌ 读取 AI 追加文件失败或内容为空，保留文件待重试")
+            }
         }
         
         // 3. 注入虚拟/Mock 数据 (如果是一天中第一次打开且没有 AI 文件)
         if lastDay != todayStr && !aiContentFound {
-            let mockText: String
-            switch baseFilename {
-            case "work":
-                mockText = "整理今日核心工作任务\n检查 MediaAgent 自动化状态\n复盘昨日遗留待办清单"
-            case "dev":
-                mockText = "Review 侧边笔记代码提交\n优化 UI 触发表层逻辑\n调试 AI 数据流同步接口"
-            case "life":
-                mockText = "保持每日核心运动 30 分钟\n补充足够水分与健康饮食\n阅读技术博文或书籍 15 分钟"
-            default:
-                mockText = "开始记录精彩的一天"
-            }
-            
-            let titleAttr = NSAttributedString(string: "今日建议完成的任务：\n", attributes: [
-                .font: NSFont.boldSystemFont(ofSize: 17), 
-                .foregroundColor: NSColor.systemGray
-            ])
-            mutableAttr.append(titleAttr)
-            injectTasks(mockText, into: mutableAttr)
+            // 已移除写死的任务，保持界面整洁待同步
             modified = true
         }
         
         if modified {
             self.attributedString = mutableAttr
+            // Force save immediately to confirm sync
+            saveIfNeeded()
+            
+            // Log for debugging (simple file log)
+            let logURL = MaintenanceManager.archiveURL.appendingPathComponent("sync_log.txt")
+            let logMsg = "[\(Date())] \(baseFilename): AI content applied. Length: \(mutableAttr.length)\n"
+            if let data = logMsg.data(using: .utf8) {
+                if FileManager.default.fileExists(atPath: logURL.path) {
+                    if let fileHandle = try? FileHandle(forWritingTo: logURL) {
+                        fileHandle.seekToEndOfFile()
+                        fileHandle.write(data)
+                        fileHandle.closeFile()
+                    }
+                } else {
+                    try? data.write(to: logURL)
+                }
+            }
         }
     }
     
@@ -145,17 +172,28 @@ class NoteManager: ObservableObject {
             .map { line -> String in
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 if trimmed.isEmpty { return line }
-                if !trimmed.hasPrefix("☐") && !trimmed.hasPrefix("☑") {
-                   let regex = try? NSRegularExpression(pattern: "^\\d+\\.\\s*")
-                   let cleanRange = NSRange(location: 0, length: trimmed.utf16.count)
-                   let stripped = regex?.stringByReplacingMatches(in: trimmed, range: cleanRange, withTemplate: "") ?? trimmed
-                   return "☐ " + stripped
+                
+                // 检查是否已经包含任务标记（☐ 或 ☑）
+                if trimmed.contains("☐") || trimmed.contains("☑") {
+                    return line
                 }
-                return line
+                
+                // 移除可能的数字列表前缀 (如 "1. ") 并添加 ☐
+                let regex = try? NSRegularExpression(pattern: "^\\d+\\.\\s*")
+                let cleanRange = NSRange(location: 0, length: trimmed.utf16.count)
+                let stripped = regex?.stringByReplacingMatches(in: trimmed, range: cleanRange, withTemplate: "") ?? trimmed
+                
+                return "☐ " + stripped
             }
             .joined(separator: "\n")
         
         let aiAttr = NSAttributedString(string: "\(processedText)\n\n", attributes: [.font: rootFont, .foregroundColor: NSColor.black])
+        
+        // 如果当前有内容，在追加前确保有换行
+        if mutableAttr.length > 0 && !mutableAttr.string.hasSuffix("\n\n") {
+            mutableAttr.append(NSAttributedString(string: "\n", attributes: [.font: rootFont]))
+        }
+        
         mutableAttr.append(aiAttr)
     }
     
@@ -231,6 +269,12 @@ class SidePanelController: NSObject, ObservableObject {
     @Published var activeCategory: NoteCategory?
     
     private var cancellables = Set<AnyCancellable>()
+    
+    func refreshAll() {
+        self.workNotes.checkDailyAndAIUpdates()
+        self.devNotes.checkDailyAndAIUpdates()
+        self.lifeNotes.checkDailyAndAIUpdates()
+    }
     
     func setupPanel() {
         let screenRect = NSScreen.main?.visibleFrame ?? .zero
@@ -528,13 +572,50 @@ struct SideView: View {
                             .resizable().scaledToFit().frame(width: 28, height: 28).clipShape(Circle())
                         
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("侧边笔记").font(.system(size: 16, weight: .bold, design: .rounded))
+                            Text("李武的笔记").font(.system(size: 16, weight: .bold, design: .rounded))
                             Text(Date(), style: .date).font(.system(size: 10, weight: .medium, design: .rounded)).foregroundColor(.secondary)
                         }
+                        
                         Spacer()
-                        Button(action: { ctrl.isExpanded = false }) {
-                            Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
-                        }.buttonStyle(.plain)
+                        
+                        HStack(spacing: 14) {
+                            Button(action: { ctrl.refreshAll() }) {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundColor(.blue)
+                            }
+                            .buttonStyle(.plain)
+                            .help("刷新并同步 AI 指令数据")
+                            
+                            Button(action: { 
+                                // 点击显示路径信息
+                                let alert = NSAlert()
+                                alert.messageText = "SideNote 数据路径"
+                                alert.informativeText = MaintenanceManager.archiveURL.path
+                                alert.addButton(withTitle: "复制路径")
+                                alert.addButton(withTitle: "确定")
+                                let response = alert.runModal()
+                                if response == .alertFirstButtonReturn {
+                                    let pasteboard = NSPasteboard.general
+                                    pasteboard.clearContents()
+                                    pasteboard.setString(MaintenanceManager.archiveURL.path, forType: .string)
+                                }
+                            }) {
+                                Image(systemName: "info.circle")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("查看数据存档路径")
+
+                            Button(action: { ctrl.isExpanded = false }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 15))
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("收起笔记面板")
+                        }
                     }
                     .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 6)
                     

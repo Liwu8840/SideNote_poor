@@ -46,6 +46,18 @@ cat > "$APP_CONTENTS/Info.plist" <<'EOF'
 </plist>
 EOF
 
+# 6. Finalize App Bundle
+echo "Finalizing $APP_NAME..."
+xattr -rc "$APP_NAME"
+touch "$APP_NAME"
+
+# 7. Create ZIP for distribution
 ditto -c -k --sequesterRsrc --keepParent "$APP_NAME" "$ZIP_NAME"
 
-echo "Created $ZIP_NAME"
+echo "------------------------------------------"
+echo "✅ 打包完成！ (Build Successful)"
+echo "🚀 本地可运行文件: $APP_NAME"
+echo "📦 分发压缩文件: $ZIP_NAME"
+echo "------------------------------------------"
+echo "提示: 你现在可以直接运行 $APP_NAME，或者将其移动到 /Applications 目录。"
+echo "Command to install: cp -R $APP_NAME /Applications/"
