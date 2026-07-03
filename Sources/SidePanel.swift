@@ -2,6 +2,9 @@ import AppKit
 import SwiftUI
 import Combine
 
+/// 默认正文字号（修改此值可统一调整所有任务文本和勾选框大小）
+let kDefaultFontSize: CGFloat = 18
+
 // ==========================================
 // 1. 数据存储层 (Data Layer)
 // ==========================================
@@ -167,7 +170,7 @@ class NoteManager: ObservableObject {
     
     /// 辅助方法：将纯文本任务段落转化为带 ☐ 的富文本
     private func injectTasks(_ text: String, into mutableAttr: NSMutableAttributedString) {
-        let rootFont = NSFont.systemFont(ofSize: 16)
+        let rootFont = NSFont.systemFont(ofSize: kDefaultFontSize)
         let processedText = text.components(separatedBy: .newlines)
             .map { line -> String in
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -215,7 +218,7 @@ class NoteManager: ObservableObject {
                 mutableAttr.addAttribute(.foregroundColor, value: NSColor.black, range: range)
             }
         }
-        mutableAttr.addAttribute(.font, value: NSFont.systemFont(ofSize: 16), range: fullRange)
+        mutableAttr.addAttribute(.font, value: NSFont.systemFont(ofSize: kDefaultFontSize), range: fullRange)
         
         self.attributedString = mutableAttr
         self.lastSavedHash = mutableAttr.hashValue
@@ -258,7 +261,12 @@ class NoteManager: ObservableObject {
 class SidePanelController: NSObject, ObservableObject {
     var panel: SidePanel?
     @Published var isExpanded = false
+    @Published var isContentVisible = false
     @Published var isHovered = false
+    private let expandedPanelWidth: CGFloat = 330
+    private let collapsedPanelWidth: CGFloat = 8
+    private let collapsedPanelHeight: CGFloat = 80
+    private let frameAnimationDuration: TimeInterval = 0.18
     
     let workNotes = NoteManager(category: .work)
     let devNotes = NoteManager(category: .dev)
@@ -278,7 +286,7 @@ class SidePanelController: NSObject, ObservableObject {
     
     func setupPanel() {
         let screenRect = NSScreen.main?.visibleFrame ?? .zero
-        let p = SidePanel(contentRect: NSRect(x: screenRect.minX, y: screenRect.minY, width: 12, height: screenRect.height), backing: .buffered, defer: false)
+        let p = SidePanel(contentRect: panelFrame(isExpanded: false, screen: screenRect), backing: .buffered, defer: false)
         
         p.onSwipeRight = { [weak self] in self?.isExpanded = true }
         p.onSwipeLeft = { [weak self] in self?.isExpanded = false }
@@ -289,34 +297,53 @@ class SidePanelController: NSObject, ObservableObject {
         p.contentView = NSHostingView(rootView: rootView)
         p.makeKeyAndOrderFront(nil)
         
-        $isExpanded.sink { [weak self] exp in 
+        $isExpanded.sink { [weak self] exp in
             guard let self = self else { return }
+            self.updatePanelFrame(isExpanded: exp)
+
             if exp {
-                if MaintenanceManager.performCheck() {
-                    self.workNotes.resetData()
-                    self.devNotes.resetData()
-                    self.lifeNotes.resetData()
+                DispatchQueue.main.asyncAfter(deadline: .now() + self.frameAnimationDuration) { [weak self] in
+                    guard let self = self, self.isExpanded else { return }
+                    self.isContentVisible = true
+
+                    if MaintenanceManager.performCheck() {
+                        self.workNotes.resetData()
+                        self.devNotes.resetData()
+                        self.lifeNotes.resetData()
+                    }
+                    self.workNotes.checkDailyAndAIUpdates()
+                    self.devNotes.checkDailyAndAIUpdates()
+                    self.lifeNotes.checkDailyAndAIUpdates()
                 }
-                self.workNotes.checkDailyAndAIUpdates()
-                self.devNotes.checkDailyAndAIUpdates()
-                self.lifeNotes.checkDailyAndAIUpdates()
+            } else {
+                self.isContentVisible = false
             }
-        }.store(in: &cancellables)
-        
-        $isExpanded.combineLatest($isHovered).sink { [weak self] (exp, hov) in 
-            self?.updatePanelFrame(isExpanded: exp, isHovered: hov) 
         }.store(in: &cancellables)
     }
     
-    private func updatePanelFrame(isExpanded: Bool, isHovered: Bool) {
+    private func updatePanelFrame(isExpanded: Bool) {
         guard let p = panel, let s = NSScreen.main?.visibleFrame else { return }
-        let targetWidth: CGFloat = isExpanded ? 340 : (isHovered ? 24 : 12)
+        let targetFrame = panelFrame(isExpanded: isExpanded, screen: s)
+        p.hasShadow = isExpanded
         
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.15 
+            ctx.duration = frameAnimationDuration
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            p.animator().setFrame(NSRect(x: s.minX, y: s.minY, width: targetWidth, height: s.height), display: true)
+            p.animator().setFrame(targetFrame, display: true)
         }
+    }
+
+    private func panelFrame(isExpanded: Bool, screen: NSRect) -> NSRect {
+        if isExpanded {
+            return NSRect(x: screen.minX, y: screen.minY, width: expandedPanelWidth, height: screen.height)
+        }
+
+        return NSRect(
+            x: screen.minX,
+            y: screen.midY - collapsedPanelHeight / 2,
+            width: collapsedPanelWidth,
+            height: collapsedPanelHeight
+        )
     }
     
     func applyColorToSelection(_ color: NSColor) {
@@ -324,7 +351,7 @@ class SidePanelController: NSObject, ObservableObject {
         let range = tv.selectedRange()
         if range.length > 0 {
             tv.textStorage?.addAttribute(.foregroundColor, value: color, range: range)
-            tv.textStorage?.addAttribute(.font, value: NSFont.systemFont(ofSize: 16), range: range)
+            tv.textStorage?.addAttribute(.font, value: NSFont.systemFont(ofSize: kDefaultFontSize), range: range)
             nm.attributedString = tv.attributedString()
         }
     }
@@ -383,15 +410,70 @@ class SidePanel: NSPanel {
 class NativeInteractiveTextView: NSTextView {
     // 焦点获取回调
     var onFocusGained: (() -> Void)?
-    
+
+    /// 检查并确保第一行有 ☐ 前缀（如果文档为空或首行无框时自动补上）
+    private func ensureFirstLineHasCheckbox() {
+        guard let textStorage = self.textStorage else { return }
+        let text = textStorage.string
+
+        // 空文档 → 直接插入 ☐
+        if text.isEmpty {
+            let attrString = NSAttributedString(string: "☐ ", attributes: self.typingAttributes)
+            textStorage.setAttributedString(attrString)
+            self.selectedRange = NSRange(location: 2, length: 0)
+            self.didChangeText()
+            NotificationCenter.default.post(name: NSText.didChangeNotification, object: self)
+            return
+        }
+
+        // 非空：检查第一行是否已以 ☐/☑ 开头
+        let firstChar = (text as NSString).substring(with: NSRange(location: 0, length: 1))
+        if firstChar != "☐" && firstChar != "☑" {
+            let attrString = NSAttributedString(string: "☐ ", attributes: self.typingAttributes)
+            textStorage.insert(attrString, at: 0)
+            self.selectedRange = NSRange(location: self.selectedRange().location + 2, length: 0)
+            self.didChangeText()
+            NotificationCenter.default.post(name: NSText.didChangeNotification, object: self)
+        }
+    }
+
     override func becomeFirstResponder() -> Bool {
         let success = super.becomeFirstResponder()
         if success {
+            // 获得焦点时确保第一行有 ☐（空文档或遗漏都补上）
+            ensureFirstLineHasCheckbox()
             onFocusGained?()
         }
         return success
     }
-    
+
+    /// 按 Enter 时自动在新行开头插入 ☐（任务勾选框）
+    override func insertNewline(_ sender: Any?) {
+        super.insertNewline(sender)
+
+        guard let textStorage = self.textStorage else { return }
+
+        // 插入换行后，光标停留在新行的起始位置
+        let insertionPoint = self.selectedRange().location
+
+        // 检查新行是否已经有 ☐ 或 ☑，避免重复添加
+        if insertionPoint < textStorage.length {
+            let nextChar = (textStorage.string as NSString).substring(with: NSRange(location: insertionPoint, length: 1))
+            if nextChar == "☐" || nextChar == "☑" {
+                return
+            }
+        }
+
+        let checkboxString = "☐ "
+        let attrString = NSAttributedString(string: checkboxString, attributes: self.typingAttributes)
+        textStorage.insert(attrString, at: insertionPoint)
+        self.selectedRange = NSRange(location: insertionPoint + checkboxString.count, length: 0)
+
+        // 通知内容已变更
+        self.didChangeText()
+        NotificationCenter.default.post(name: NSText.didChangeNotification, object: self)
+    }
+
     override func mouseDown(with event: NSEvent) {
         let point = self.convert(event.locationInWindow, from: nil)
         var fraction: CGFloat = 0.0
@@ -472,10 +554,10 @@ struct RichTextEditor: NSViewRepresentable {
         
         textView.appearance = NSAppearance(named: .aqua)
         textView.textColor = .black
-        textView.font = NSFont.systemFont(ofSize: 16)
+        textView.font = NSFont.systemFont(ofSize: kDefaultFontSize)
         textView.insertionPointColor = .black
         textView.typingAttributes[.foregroundColor] = NSColor.black
-        textView.typingAttributes[.font] = NSFont.systemFont(ofSize: 16)
+        textView.typingAttributes[.font] = NSFont.systemFont(ofSize: kDefaultFontSize)
         
         textView.textStorage?.setAttributedString(noteManager.attributedString)
         return scrollView
@@ -486,7 +568,7 @@ struct RichTextEditor: NSViewRepresentable {
         if !tv.attributedString().isEqual(to: noteManager.attributedString) {
             tv.textStorage?.setAttributedString(noteManager.attributedString)
             tv.typingAttributes[.foregroundColor] = NSColor.black 
-            tv.typingAttributes[.font] = NSFont.systemFont(ofSize: 16)
+            tv.typingAttributes[.font] = NSFont.systemFont(ofSize: kDefaultFontSize)
         }
         tv.insertionPointColor = .black 
     }
@@ -509,7 +591,7 @@ struct RichTextEditor: NSViewRepresentable {
             if color != .systemRed && color != .systemBlue && color != .systemGreen && color != .systemPurple && color != .systemGray {
                 tv.typingAttributes[.foregroundColor] = NSColor.black
             }
-            tv.typingAttributes[.font] = NSFont.systemFont(ofSize: 16)
+            tv.typingAttributes[.font] = NSFont.systemFont(ofSize: kDefaultFontSize)
             // 焦点变更已移交至 onFocusGained 捕捉，更底层且绝对可靠
         }
     }
@@ -554,10 +636,12 @@ struct AreaView: View {
 // ==========================================
 struct SideView: View {
     @ObservedObject var ctrl: SidePanelController
+    private let edgeHitWidth: CGFloat = 8
+    private let edgeSwipeThreshold: CGFloat = 28
     
     var body: some View {
         HStack(spacing: 0) {
-            if ctrl.isExpanded {
+            if ctrl.isContentVisible {
                 VStack(spacing: 0) {
                     HStack(spacing: 12) {
                         let avatarImage: NSImage = {
@@ -644,23 +728,29 @@ struct SideView: View {
                 .transition(.move(edge: .leading))
             }
             
-            VStack(spacing: 0) {
-                Spacer().frame(height: 120) // 顶部死区：避免与全屏控制按钮冲突
-                
+            if !ctrl.isExpanded {
                 ZStack(alignment: .leading) {
                     Color.white.opacity(0.001)
-                        .frame(width: ctrl.isExpanded ? 0 : 55)
+                        .frame(width: edgeHitWidth, height: 80)
                         .onHover { over in ctrl.isHovered = over }
-                        .onTapGesture { ctrl.isExpanded = true }
+                        .gesture(
+                            DragGesture(minimumDistance: 12)
+                                .onEnded { value in
+                                    let dx = value.translation.width
+                                    let dy = abs(value.translation.height)
+                                    if dx > edgeSwipeThreshold && dx > dy {
+                                        ctrl.isExpanded = true
+                                    }
+                                }
+                        )
                     
                     if !ctrl.isExpanded {
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .fill(ctrl.isHovered ? Color.accentColor : Color.secondary.opacity(0.4))
-                            .frame(width: 4, height: 60).padding(.leading, 4)
+                            .frame(width: 3, height: 60).padding(.leading, 2)
                     }
                 }
-                
-                Spacer() // 底部撑开
+                .frame(width: edgeHitWidth, height: 80)
             }
         }
         .edgesIgnoringSafeArea(.all)

@@ -1,0 +1,19 @@
+{
+  "archive_dir": "~/Documents/SideNote_Archive/Current_Week",
+  "categories": ["work", "dev", "life"],
+  "llm": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "api_key_env": "SIDENOTE_LLM_API_KEY",
+    "temperature": 0.3,
+    "max_tokens": 1024
+  },
+  "schedule": {
+    "time": "08:00",
+    "timezone": "Asia/Shanghai"
+  },
+  "options": {
+    "dry_run": false,
+    "verbose": false
+  }
+}
